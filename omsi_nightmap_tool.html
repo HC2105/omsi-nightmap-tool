@@ -2211,6 +2211,15 @@
       const next = !!on;
       if (state.drawModeActive === next) return;
       state.drawModeActive = next;
+      // Turning Draw OFF hides the override boxes (areOverrideBoxesVisible). Any
+      // selection pointing at them is now dangling — it would keep the marching
+      // ants and the Scale button alive for rectangles the user cannot see, and
+      // Delete/arrow keys could still mutate them. Drop the selection on hide.
+      if (!next && state.step1Mode === 'assisted') {
+        state.selectedMaskIds = new Set();
+        state.selectedManualMaskId = undefined;
+        updateScaleGroupButton();
+      }
       updateMaskSettingsLock();
       renderAll();
       if (next) logCommand('Draw mode ON — mask settings locked.');
@@ -2308,9 +2317,12 @@
       // proxy onto the ACTIVE mode's own Set, so each mode's multi-selection survives
       // a round trip: switch away and back and your selection is still there.
       state.selectedManualMaskId = undefined;
-
-      // Switching modes always exits draw mode: the lock belongs to the mode you left.
-      forceExitDrawMode();
+      // Draw mode used to be force-cleared on every mode switch. Don't — Draw
+      // is now the *visibility gate* for override boxes (areOverrideBoxesVisible),
+      // and clearing it on a round trip would hide everything the user just built.
+      // The variable is global and harmless in Manual (areOverrideBoxesVisible
+      // returns true there regardless), so Assisted retains the user's preference
+      // after switching away and back.
 
       const manualBtn = document.getElementById('manualModeBtn');
       const assistedBtn = document.getElementById('assistedModeBtn');
@@ -2348,8 +2360,11 @@
         logCommand('Step 2 switched to Assisted mode.');
       } else { // manual
         // Manual = skip auto detection; purple masks directly exclude regions.
-        // Clear any auto-mode residue (INV toggles). Step-0 boxes stay locked here too.
-        state.invertedBoxIds = new Set();
+        // INV toggles are NOT cleared here: they belong to Assisted's auto-detector
+        // and the user expects them to be exactly as they left them after a manual
+        // detour. They are merely inert while in Manual (the per-room INV branch
+        // in the renderer is gated on `step1Mode === 'assisted'`), but their values
+        // must survive the round trip.
         if (manualBtn) manualBtn.className = btnBase + ' bg-violet-500 text-white';
         if (assistedBtn) assistedBtn.className = btnOff;
         if (manualControls) manualControls.classList.remove('hidden');
@@ -3400,7 +3415,11 @@
       //   'remove' (force dark) -> violet (matches legacy manual-mode colour)
       const isOverlayDrawActive = state.currentStep === 1 && isMaskOverlayActive();
       const isStep1Manual = state.currentStep === 1 && isMaskOverlayActive();
-      if (isOverlayDrawActive && getActiveBoxes().length > 0) {
+      // Draw-mode override boxes are a scratch layer: with Draw OFF in Assisted
+      // mode they stop being drawn (their mask still applies downstream), so the
+      // canvas shows only the auto-detector result plus the room boxes.
+      const showOverrideBoxes = areOverrideBoxesVisible();
+      if (isOverlayDrawActive && showOverrideBoxes && getActiveBoxes().length > 0) {
         const antOffset = -((performance.now() / 30) % 16);
         getActiveBoxes().forEach(mask => {
           const sx = offX + mask.x * scaleX;
@@ -3518,18 +3537,27 @@
         // Step 1 (any mode): Step-0 boxes stay in the picture as a reference, but they
         // are LOCKED — no resize handles, no selection highlight, no label tags.
         // The mask boxes above are the user's primary interactive layer.
+        //
+        // BUGFIX: INV is a Step-1 concept (it flips the Assisted auto-detector), but
+        // this branch used to draw every room in flat locked-gray with no INV state at
+        // all — the green tint + "INV" badge only existed in the Step 0/2/3 `else`
+        // branch below, which Step 1 never reaches. So toggling INV worked but left
+        // no visible trace on the canvas. An inverted room now renders green here.
+        const invAppliesHere = state.step1Mode === 'assisted';
         boxesToDraw.forEach(box => {
           const sx = offX + box.x * scaleX;
           const sy = offY + box.y * scaleY;
           const bw = box.w * scaleX;
           const bh = box.h * scaleY;
           if (sx + bw < 0 || sy + bh < 0 || sx > sw || sy > sh) return;
+          const isInv = invAppliesHere && state.invertedBoxIds && state.invertedBoxIds.has(box.id);
           ctx.save();
-          ctx.fillStyle = 'rgba(100, 116, 139, 0.16)';
+          ctx.fillStyle = isInv ? 'rgba(22, 163, 74, 0.22)' : 'rgba(100, 116, 139, 0.16)';
           ctx.fillRect(sx, sy, bw, bh);
           // Dotted outline so the room is still visible behind the new mask work.
-          ctx.lineWidth = 1.5;
-          ctx.strokeStyle = '#64748b';
+          // Green for INV rooms, slate for the rest.
+          ctx.lineWidth = isInv ? 2 : 1.5;
+          ctx.strokeStyle = isInv ? '#22c55e' : '#64748b';
           ctx.setLineDash([6, 4]);
           ctx.strokeRect(Math.round(sx) + 0.5, Math.round(sy) + 0.5, Math.round(bw), Math.round(bh));
           ctx.setLineDash([]);
@@ -3539,10 +3567,25 @@
             const idLabel = `#${box.id}`;
             const idTextW = ctx.measureText(idLabel).width;
             const idTagW = Math.min(bw, idTextW + 8);
-            ctx.fillStyle = '#475569';
+            ctx.fillStyle = isInv ? '#dc2626' : '#475569';
             ctx.fillRect(sx, sy, idTagW, 14);
-            ctx.fillStyle = '#cbd5e1';
+            ctx.fillStyle = isInv ? '#ffffff' : '#cbd5e1';
             ctx.fillText(idLabel, sx + 4, sy + 10.5);
+
+            // INV badge, top-right. Only in Assisted, where the flag is meaningful.
+            if (isInv) {
+              const invLabel = 'INV';
+              ctx.font = 'bold 10px JetBrains Mono, monospace';
+              const invTextW = ctx.measureText(invLabel).width;
+              const invBadgeW = Math.min(bw, invTextW + 8);
+              ctx.fillStyle = '#166534';
+              ctx.fillRect(sx + bw - invBadgeW, sy, invBadgeW, 14);
+              ctx.strokeStyle = '#22c55e';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(sx + bw - invBadgeW + 0.5, sy + 0.5, invBadgeW - 1, 13);
+              ctx.fillStyle = '#ffffff';
+              ctx.fillText(invLabel, sx + bw - invBadgeW + 4, sy + 10.5);
+            }
           }
           ctx.restore();
         });
@@ -3861,6 +3904,49 @@
 
     function drawMaskBoxesOverlay(ctx) {
       // Boxes and labels are now rendered as crisp vectors in screen-space via drawVectorMaskBoxesOnStage (#19)
+    }
+
+// =========================================================================
+    // OVERRIDE-BOX LAYER VISIBILITY (Assisted mode)
+    // =========================================================================
+// Add/Remove override boxes are a *scratch* layer: they let you force the
+// auto-detector's answer during a focused editing pass, and their mask still
+// applies to the nightmap once you stop editing.
+//
+// So when Draw is OFF in Assisted mode the boxes are BOTH hidden and
+// unclickable, but their effect stays baked into the pipeline. Toggling Draw
+// back ON restores the visible, editable layer.
+//
+// Manual mode is exempt — there the boxes ARE the product, not a scratch layer,
+// so they're always shown and always clickable.
+    function areOverrideBoxesVisible() {
+      if (state.currentStep !== 1) return false;
+      if (state.step1Mode === 'manual') return true;
+      return state.drawModeActive;
+    }
+
+    // Step 1 is a two-layer scene: Step-0 room boxes (examine-the-detector
+    // surface) and Draw-mode override boxes (force-the-detector controls).
+    // They're mutually exclusive at the click layer:
+    //   - When override boxes are LIVE (Draw ON in Assisted, always in Manual)
+    //     the user has said "I'm editing overrides" — clicks belong to that
+    //     layer. Step-0 boxes must not respond.
+    //   - When override boxes are HIDDEN (Draw OFF in Assisted) the user is
+    //     looking at the detector result; clicks land on Step-0 boxes for
+    //     selection and per-box INV toggling.
+    // One function, one rule — every Route A gate below uses it so we don't
+    // drift.
+    function step1StepZeroBoxesAcceptClicks() {
+      // In Step 1, only Assisted/Draw-ON has the conflict. Manual mode treats
+      // Step-0 boxes as an inspector-reference layer, so clicks on them are
+      // always welcome (selection for the room inspector panel, etc.).
+      // Assisted/Draw-OFF is the "examine" mode: Step-0 clicks select the room
+      // for inspection and click-to-toggle INV.
+      // Assisted/Draw-ON is the "edit overrides" mode: clicks belong to the
+      // override boxes only.
+      if (state.currentStep !== 1) return true;
+      if (state.step1Mode === 'manual') return true;
+      return !state.drawModeActive;
     }
 
     // =========================================================================
@@ -4650,6 +4736,9 @@
     
     function findManualMaskAt(x, y) {
       if (state.currentStep !== 1 || !isMaskOverlayActive()) return null;
+      // Hidden override boxes must not be click targets either — otherwise you'd
+      // select/move a rectangle you can't even see. Mirrors areOverrideBoxesVisible().
+      if (!areOverrideBoxesVisible()) return null;
       const masks = getActiveBoxes() || [];
       for (let i = masks.length - 1; i >= 0; i--) {
         const m = masks[i];
@@ -4688,9 +4777,10 @@
         if (evt.button === 0 && evt.shiftKey) {
           const unclampedPt = getCanvasCoords(evt, false);
           const insideTex = unclampedPt.x >= 0 && unclampedPt.x < state.width && unclampedPt.y >= 0 && unclampedPt.y < state.height;
-          
-          // Step 1 (any mode): boxes are locked, so Shift+Drag always starts marquee
-          // Just check for mask hits in Manual mode
+
+          // In Step 1 Assisted/Draw-ON, Step-0 boxes are locked from selection;
+          // for this branch that means "treat them as empty space" — proceed to
+          // marquee-set-up at the bottom of this handler.
           if (state.currentStep === 1 && isMaskOverlayActive()) {
             const hitMask = insideTex ? findManualMaskAt(unclampedPt.x, unclampedPt.y) : null;
             // If Shift+mousedown is on a mask, let onPointerDown handle it
@@ -4892,10 +4982,46 @@
         return;
       }
 
-      // Step 1 in either Refine or Manual: Step-0 boxes are LOCKED from clicks.
-      // (Per-box INV toggles were removed — they affect the auto detector path, which now
-      // is gated through the Invert All toggle + the Step-0 box inspector if a box is selected
-      // via Step 0. Clicking a Step-0 box in Step 1 has no effect here.)
+      // Step 1 (Assisted): PLAIN click on a Step-0 window box toggles that box's INV
+      // flag. No modifier needed — in Assisted mode a plain click on a room box
+      // has no other meaning (rooms are locked from move/resize here), so the
+      // click is unambiguous.
+      //
+      // INV is a property of the AUTO-DETECT path: it flips how the detector reads
+      // the facade inside that room (lit-window-on-dark-facade, and vice versa).
+      // It XORs with the global Invert All toggle in the renderer, so the two
+      // combine as expected instead of fighting each other.
+      //
+      // Three guards keep this precise:
+      //   1. Assisted only. Manual mode draws straight onto the mask with no
+      //      detector, so per-box INV would have nothing to influence.
+      //   2. Draw OFF. While Draw is ON the user is editing override boxes and
+      //      the Step-0 box layer is locked — every click belongs to the override
+      //      layer. See step1StepZeroBoxesAcceptClicks().
+      //   3. Must NOT land on an Add/Remove override box. Those live on the same
+      //      canvas layer and often sit inside a room box; a click there belongs
+      //      to the override editor, not to the INV toggle.
+      if (state.currentStep === 1 && state.step1Mode === 'assisted' && step1StepZeroBoxesAcceptClicks()) {
+        const hit0 = findBoxAt(pt.x, pt.y);
+        const hitOverride = findManualMaskAt(pt.x, pt.y);
+        if (hit0 && !hitOverride && !evt.shiftKey) {
+          pushUndoState();
+          if (!state.invertedBoxIds) state.invertedBoxIds = new Set();
+          if (state.invertedBoxIds.has(hit0.id)) {
+            state.invertedBoxIds.delete(hit0.id);
+            logCommand(`INV OFF for Room Box #${hit0.id}.`);
+          } else {
+            state.invertedBoxIds.add(hit0.id);
+            logCommand(`INV ON for Room Box #${hit0.id}.`);
+          }
+          // Reflect the new state in the room's label so the click has visible
+          // confirmation even when the detector output happens to look the same.
+          updateSelectedBoxInspector();
+          regenerateAllPipelines();
+          renderAll();
+          return;
+        }
+      }
 
       // Step 1 Mask Mode (Refine or Manual): Mask box interaction (move, scale, multi-select)
       if (state.currentStep === 1 && isMaskOverlayActive()) {
@@ -5042,11 +5168,28 @@
             return;
           }
         } else {
+          // Clicked on empty area in Step 1.
+          //
+          // BUGFIX: in Assisted mode, drawing a NEW refine box is gated behind
+          // the Draw switch. If Draw is OFF we must clear selection / do nothing
+          // and let the user re-toggle Draw on instead of silently creating
+          // override boxes they didn't ask for.
+          //
+          // Manual mode is unaffected — drawing there is the only way to
+          // produce mask boxes, so it always proceeds.
+          if (state.step1Mode === 'assisted' && !state.drawModeActive) {
+            state.selectedMaskIds = new Set();
+            state.selectedManualMaskId = undefined;
+            updateScaleGroupButton();
+            renderAll();
+            return;
+          }
+
           // Clicked on empty area - clear mask selection and start drawing
           state.selectedMaskIds = new Set();
           state.selectedManualMaskId = undefined;
           updateScaleGroupButton();
-          
+
           // Start drawing new mask
           state.interaction = {
             active: true,
