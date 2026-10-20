@@ -5,8 +5,11 @@ Load a daytime facade, draw rectangular "rooms," mask the window frames and mull
 randomize illumination, and export the nightmap ready to drop into OMSI's `night/` folder
 beside the original.
 
-No build step, no server, no dependencies — open `omsi_nightmap_tool.html` in any
-modern browser.
+**→ [https://hc2105.github.io/omsi-nightmap-tool/](https://hc2105.github.io/omsi-nightmap-tool/)**
+Hosted via GitHub Pages. First visit loads three small CDN libraries (Tailwind,
+three.js, Lucide icons) and then the app runs entirely in your browser — no
+account, no login, no telemetry. Sessions stay in your browser's memory; if you
+want to keep one, click **Save Session** before closing the tab.
 
 ## What it does
 
