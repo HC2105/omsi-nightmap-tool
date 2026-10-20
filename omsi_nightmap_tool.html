@@ -530,7 +530,7 @@
           <div>
             <span class="text-[10px] font-mono uppercase tracking-wider text-amber-400 font-semibold">Step 3 of 4 • Randomized Illumination</span>
             <h2 class="text-base font-bold text-white mt-0.5">Lit Room Ratio</h2>
-            <p class="text-xs text-slate-400 mt-0.5">Select window box/es on the editor to toggle it between <strong>Always On</strong>, <strong>Randomized</strong> and <strong>Less Frequent (Randomized)</strong>.</p>
+            <p class="text-xs text-slate-400 mt-0.5">Click a window box to cycle <strong>Normal</strong> → <strong>Always</strong> → <strong>Less %</strong>. Hold <strong>Shift</strong> to multi-select, then use <em>Set Status of Selected</em> to change them all at once.</p>
           </div>
         </div>
 
@@ -563,6 +563,28 @@
             <span>0%</span>
             <span>100%</span>
           </div>
+        </div>
+
+        <!-- BULK STATUS CONTROL: applies to ALL multi-selected boxes at once -->
+        <div id="bulkStatusBar" class="hidden bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex flex-col gap-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-xs font-semibold text-white">Set Status of Selected</span>
+            <span id="bulkSelectionLabel" class="text-xs font-mono font-bold text-amber-400">0 selected</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <button onclick="setSelectedBoxType('residential')" class="px-2 py-1.5 rounded-md text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 transition-colors">
+              Normal
+            </button>
+            <button onclick="setSelectedBoxType('low')" class="px-2 py-1.5 rounded-md text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 transition-colors">
+              Less&nbsp;%
+            </button>
+            <button onclick="setSelectedBoxType('always')" class="px-2 py-1.5 rounded-md text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 transition-colors">
+              Always
+            </button>
+          </div>
+          <p class="text-[10px] text-slate-500 leading-tight">
+            Applies to every window you multi-select. Hold <strong>Shift</strong> and click boxes to add or remove them from the selection.
+          </p>
         </div>
 
         <!-- 3D Stacked Building Preview for Random Pattern Review -->
@@ -6187,6 +6209,7 @@
 
     function updateSelectedBoxInspector() {
       const label = document.getElementById('selectedBoxIdLabel');
+      updateBulkStatusBar();
       if (!label) return;
       const selCount = state.selectedBoxIds ? state.selectedBoxIds.size : 0;
       if (selCount > 1) {
@@ -6203,6 +6226,18 @@
       }
     }
 
+    // Shows the bulk status bar only while at least one box is selected.
+    function updateBulkStatusBar() {
+      const bar = document.getElementById('bulkStatusBar');
+      if (!bar) return;
+      const selCount = state.selectedBoxIds ? state.selectedBoxIds.size : 0;
+      bar.classList.toggle('hidden', selCount === 0);
+      const lbl = document.getElementById('bulkSelectionLabel');
+      if (lbl) {
+        lbl.textContent = selCount === 1 ? '1 selected' : `${selCount} selected`;
+      }
+    }
+
     function setSelectedBoxType(type) {
       if (type === 'off') type = 'residential';
       const ids = state.selectedBoxIds && state.selectedBoxIds.size > 0
@@ -6215,8 +6250,11 @@
         });
         updateSelectedBoxInspector();
         regenerateAllPipelines();
+        const typeLabel = { residential: 'Normal (Random Pool)', always: 'Always-Lit (100%)', low: 'Less Frequent (LESS %)' };
+        logCommand(`Set ${ids.size} selected box(es) to ${typeLabel[type] || type}.`);
       }
-      setBoxDrawType(type);
+      // 'low' is a randomized variant, so it keeps the Random Pool tool highlighted.
+      setBoxDrawType(type === 'always' ? 'always' : 'residential');
     }
 
     function deleteSelectedBox() {
